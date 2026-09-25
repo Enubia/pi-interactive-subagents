@@ -929,7 +929,7 @@ describe("subagent discovery", () => {
     });
   });
 
-  it("resolveEffectiveInteractive defaults to the inverse of auto-exit", () => {
+  it("resolveEffectiveInteractive defaults named agents to inverse auto-exit and bare spawns to autonomous", () => {
     // Autonomous agents (auto-exit: true) are NOT interactive — parent gets stall pings.
     assert.equal(
       testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, { autoExit: true }),
@@ -944,9 +944,12 @@ describe("subagent discovery", () => {
       testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, {}),
       true,
     );
-    // Bare spawn with no agent defs (e.g. /iterate fork) is interactive by default.
     assert.equal(
       testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, null),
+      false,
+    );
+    assert.equal(
+      testApi.resolveEffectiveInteractive({ name: "A", task: "T", fork: true }, null),
       true,
     );
   });

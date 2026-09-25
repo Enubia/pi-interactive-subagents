@@ -56,7 +56,7 @@ If your shell startup is slow and subagent commands sometimes get dropped before
 export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500
 ```
 
-Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch commands target child surfaces by explicit ID, so focus and command delivery are independent. Note: the `interactive` option controls parent status notifications, not terminal focus.
+Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch commands target child surfaces by explicit ID, so focus and command delivery are independent. The `interactive` option keeps the child open for user interaction and controls parent status notifications; it does not change terminal focus.
 
 ## What's Included
 
@@ -332,12 +332,12 @@ session-mode: lineage-only
 
 ### `auto-exit`
 
-When set to `true`, the agent session shuts down automatically as soon as the agent finishes its turn — no explicit `subagent_done` call is needed.
+When set to `true`, the agent session shuts down automatically as soon as the agent finishes its turn — no explicit `subagent_done` call is needed. Bare spawns are autonomous by default. An effective `interactive: true` setting disables auto-exit for that launch.
 
 **Behavior:**
 
 - The session closes after the agent's final message (on the `agent_end` event)
-- If the user sends **any input** before the agent finishes, auto-exit is permanently disabled for that session — the user takes over interactively
+- Aborted turns stay open for inspection or another prompt; normal completion still auto-exits after manual input
 - The modeHint injected into the agent's task is adjusted accordingly: autonomous agents see "Complete your task autonomously." rather than instructions to call `subagent_done`
 
 **When to use:**
@@ -354,16 +354,16 @@ auto-exit: true
 
 ### `interactive`
 
-Controls whether status transitions (`stalled`, `recovered`) wake the parent session with a steer message.
+Keeps the child open when true and controls whether status transitions (`stalled`, `recovered`) wake the parent session with a steer message. The tool parameter overrides agent frontmatter, which overrides the default.
 
-**Default:** the inverse of `auto-exit`. Autonomous agents (`auto-exit: true`) are non-interactive and ping the parent on stall/recovery; agents without `auto-exit` are interactive and stay quiet. Bare spawns with no agent defs (e.g. `/iterate` with `fork: true`) are treated as interactive.
+**Default:** the inverse of `auto-exit`. Autonomous agents (`auto-exit: true`) are non-interactive and ping the parent on stall/recovery; agents without `auto-exit` are interactive and stay quiet. Bare spawns without `fork` are autonomous and auto-exit on completion. `/iterate` and bare forks are interactive by default; a bare fork with `interactive: false` becomes autonomous. Explicit `interactive: true` keeps even autonomous named agents open. Explicit `interactive: false` does not override a named agent's `auto-exit: false`.
 
 **Why it exists:** Interactive agents can run for minutes or hours while the user thinks, types, and reads in the subagent's pane. Child snapshots still update the widget, but stalled/recovered supervision messages rarely need to wake the parent for user-driven sessions. Skipping the steer keeps the parent quiet until the child actually finishes.
 
 **When to override:**
 
 - Set `interactive: false` on an agent that doesn't auto-exit but you still want stall pings for
-- Set `interactive: true` on an autonomous agent you'd rather check on yourself
+- Set `interactive: true` on an autonomous agent to keep its pane open for interaction
 
 ```yaml
 ---

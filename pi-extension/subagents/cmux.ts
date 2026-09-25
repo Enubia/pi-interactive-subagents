@@ -1217,7 +1217,7 @@ export function closeSurface(surface: string): void {
 
 export interface PollResult {
   /** How the subagent exited */
-  reason: "done" | "ping" | "sentinel" | "error";
+  reason: "done" | "ping" | "sentinel" | "error" | "idle";
   /** Shell exit code (from sentinel). 0 for file-based exits. */
   exitCode: number;
   /** Ping data if reason is "ping" */
@@ -1264,6 +1264,13 @@ export async function pollForExit(
     sessionFile?: string;
     sentinelFile?: string;
     onTick?: (elapsed: number) => void;
+    /**
+     * Escape hatch for children that finished their turn but never exited
+     * (auto-exit suppressed by an aborted turn, forgotten `subagent_done`,
+     * hung shutdown). Returning a PollResult ends the poll without a sidecar
+     * or screen sentinel so the parent is not stranded forever.
+     */
+    idleCheck?: (elapsed: number) => PollResult | null;
   },
 ): Promise<PollResult> {
   const start = Date.now();
@@ -1317,6 +1324,9 @@ export async function pollForExit(
 
     const elapsed = Math.floor((Date.now() - start) / 1000);
     options.onTick?.(elapsed);
+
+    const idle = options.idleCheck?.(elapsed);
+    if (idle) return idle;
 
     await new Promise<void>((resolve, reject) => {
       if (signal.aborted) return reject(new Error("Aborted"));

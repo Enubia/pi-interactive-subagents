@@ -428,10 +428,58 @@ function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
   return ` stalled${detail}${duration} `;
 }
 
+/**
+ * How long a child may sit idle after finishing a turn before the parent
+ * stops waiting for an exit signal and delivers the result anyway.
+ *
+ * Autonomous children are supposed to shut themselves down on agent_end, so a
+ * short window is enough; a longer one applies when a human may still be
+ * typing in the child's pane.
+ */
+export const IDLE_COMPLETE_AFTER_MS = 45_000;
+export const INTERACTIVE_IDLE_COMPLETE_AFTER_MS = 600_000;
+
+export interface IdleCompletion {
+  /** Milliseconds the child has been idle after its last finished turn. */
+  idleMs: number;
+  /** Whether the child's pane should be closed as part of completing it. */
+  closePane: boolean;
+}
+
+/**
+ * Decide whether a child that reached agent_end but never exited should be
+ * completed from the parent side.
+ *
+ * Covers every strand path in one place: auto-exit suppressed because the last
+ * turn was aborted, a non-auto-exit child that forgot `subagent_done`, and a
+ * shutdown that never finished. Interactive children keep their pane so a
+ * human can carry on working in it.
+ */
+export function resolveIdleCompletion(input: {
+  activity: Pick<
+    SubagentActivityState,
+    "phase" | "updatedAt" | "waitingSince" | "agentActive" | "turnActive" | "providerActive" | "toolActive"
+  > | undefined;
+  interactive: boolean;
+  now: number;
+}): IdleCompletion | null {
+  const { activity, interactive, now } = input;
+  if (!activity) return null;
+  if (activity.phase !== "waiting" && activity.phase !== "done") return null;
+  if (activity.agentActive || activity.turnActive || activity.providerActive || activity.toolActive) return null;
+
+  const since = activity.waitingSince ?? activity.updatedAt;
+  const idleMs = now - since;
+  const threshold = interactive ? INTERACTIVE_IDLE_COMPLETE_AFTER_MS : IDLE_COMPLETE_AFTER_MS;
+  if (idleMs < threshold) return null;
+
+  return { idleMs, closePane: !interactive };
+}
+
 function resolveResultPresentation(
   result: Pick<
     SubagentResult,
-    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage"
+    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage" | "idle"
   >,
   name: string,
 ): string {
@@ -450,6 +498,22 @@ function resolveResultPresentation(
       `Error: ${result.errorMessage}\n\n` +
       `The subagent did not produce a result. You can retry by spawning a new ` +
       `subagent or resume the session with subagent_resume.${sessionRef}`
+    );
+  }
+
+  if (result.idle) {
+    // The child finished a turn but never sent an exit signal. Deliver what it
+    // produced instead of waiting forever, and say so: the summary is its last
+    // assistant message, which may be a mid-task turn rather than a wrap-up.
+    const paneNote = result.idle.paneClosed
+      ? "Its pane was closed."
+      : "Its pane is still open, so a human may still be working in it.";
+    return (
+      `Sub-agent "${name}" went idle after ${formatElapsed(result.elapsed)} without an exit signal ` +
+      `(idle ${formatElapsed(Math.floor(result.idle.idleMs / 1000))} after its last turn). ${paneNote}\n\n` +
+      `Last message:\n${result.summary}\n\n` +
+      `Treat this as unconfirmed completion — verify the work or resume the session ` +
+      `with subagent_resume before relying on it.${sessionRef}`
     );
   }
 
@@ -473,6 +537,8 @@ interface SubagentResult {
   /** Provider/agent error message when auto-retry exhausted (overload, rate limit, etc.). */
   errorMessage?: string;
   ping?: { name: string; message: string };
+  /** Set when the parent completed the run itself because the child went idle without exiting. */
+  idle?: { idleMs: number; paneClosed: boolean };
 }
 
 /**
@@ -1238,6 +1304,7 @@ async function watchSubagent(
   signal: AbortSignal,
 ): Promise<SubagentResult> {
   const { name, task, surface, startTime, sessionFile } = running;
+  const idleState: { completion: IdleCompletion | null } = { completion: null };
 
   try {
     const result = await pollForExit(surface, AbortSignal.any([signal, getModuleAbortSignal()]), {
@@ -1246,6 +1313,15 @@ async function watchSubagent(
       sentinelFile: running.sentinelFile,
       onTick() {
         observeRunningSubagent(running);
+      },
+      idleCheck() {
+        if (running.cli === "claude") return null;
+        idleState.completion = resolveIdleCompletion({
+          activity: running.activity,
+          interactive: running.interactive,
+          now: Date.now(),
+        });
+        return idleState.completion ? { reason: "idle", exitCode: 0 } : null;
       },
     });
 
@@ -1295,6 +1371,8 @@ async function watchSubagent(
         findLastAssistantMessage(allEntries) ??
         (result.errorMessage
           ? `Subagent error: ${result.errorMessage}`
+          : result.reason === "idle"
+            ? "Sub-agent produced no assistant message before going idle"
           : result.exitCode !== 0
             ? `Sub-agent exited with code ${result.exitCode}`
             : "Sub-agent exited without output");
@@ -1306,7 +1384,8 @@ async function watchSubagent(
           : "Sub-agent exited without output";
     }
 
-    closeSurface(surface);
+    const idle: IdleCompletion | null = result.reason === "idle" ? idleState.completion : null;
+    if (!idle || idle.closePane) closeSurface(surface);
     runningSubagents.delete(running.id);
 
     return {
@@ -1318,6 +1397,7 @@ async function watchSubagent(
       elapsed,
       ping: result.ping,
       ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+      ...(idle ? { idle: { idleMs: idle.idleMs, paneClosed: idle.closePane } } : {}),
     };
   } catch (err: any) {
     try {
@@ -1489,6 +1569,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   sessionFile: result.sessionFile,
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
                   ...(result.claudeSessionId ? { claudeSessionId: result.claudeSessionId } : {}),
+                  ...(result.idle ? { idle: result.idle } : {}),
                 },
               },
               { triggerTurn: true, deliverAs: "steer" },
@@ -1922,6 +2003,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   elapsed: result.elapsed,
                   sessionFile: params.sessionPath,
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+                  ...(result.idle ? { idle: result.idle } : {}),
                 },
               },
               { triggerTurn: true, deliverAs: "steer" },

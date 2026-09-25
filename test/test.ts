@@ -1591,6 +1591,75 @@ describe("subagent activity snapshots", () => {
   });
 });
 
+describe("resolveIdleCompletion", () => {
+  const { resolveIdleCompletion, IDLE_COMPLETE_AFTER_MS, INTERACTIVE_IDLE_COMPLETE_AFTER_MS } =
+    subagentsModule as any;
+
+  function idleActivity(overrides: Record<string, unknown> = {}) {
+    return {
+      phase: "waiting",
+      updatedAt: 1_000,
+      waitingSince: 1_000,
+      agentActive: false,
+      turnActive: false,
+      providerActive: false,
+      toolActive: false,
+      ...overrides,
+    };
+  }
+
+  it("returns null without an activity snapshot", () => {
+    assert.equal(resolveIdleCompletion({ activity: undefined, interactive: false, now: 1e9 }), null);
+  });
+
+  it("ignores children that are still working", () => {
+    for (const overrides of [
+      { phase: "active" },
+      { phase: "starting" },
+      { agentActive: true },
+      { toolActive: true },
+    ]) {
+      assert.equal(
+        resolveIdleCompletion({ activity: idleActivity(overrides), interactive: false, now: 1e9 }),
+        null,
+        JSON.stringify(overrides),
+      );
+    }
+  });
+
+  it("waits out the autonomous threshold before completing", () => {
+    const activity = idleActivity();
+    assert.equal(
+      resolveIdleCompletion({ activity, interactive: false, now: 1_000 + IDLE_COMPLETE_AFTER_MS - 1 }),
+      null,
+    );
+    assert.deepEqual(
+      resolveIdleCompletion({ activity, interactive: false, now: 1_000 + IDLE_COMPLETE_AFTER_MS }),
+      { idleMs: IDLE_COMPLETE_AFTER_MS, closePane: true },
+    );
+  });
+
+  it("completes a done-phase child that never exited", () => {
+    const activity = idleActivity({ phase: "done", waitingSince: undefined, updatedAt: 5_000 });
+    assert.deepEqual(
+      resolveIdleCompletion({ activity, interactive: false, now: 5_000 + IDLE_COMPLETE_AFTER_MS }),
+      { idleMs: IDLE_COMPLETE_AFTER_MS, closePane: true },
+    );
+  });
+
+  it("gives interactive children a longer window and keeps their pane", () => {
+    const activity = idleActivity();
+    assert.equal(
+      resolveIdleCompletion({ activity, interactive: true, now: 1_000 + IDLE_COMPLETE_AFTER_MS }),
+      null,
+    );
+    assert.deepEqual(
+      resolveIdleCompletion({ activity, interactive: true, now: 1_000 + INTERACTIVE_IDLE_COMPLETE_AFTER_MS }),
+      { idleMs: INTERACTIVE_IDLE_COMPLETE_AFTER_MS, closePane: false },
+    );
+  });
+});
+
 describe("subagent interruption", () => {
   function makeRunning(overrides: Record<string, unknown> = {}) {
     return {

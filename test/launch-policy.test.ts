@@ -89,11 +89,13 @@ async function verifyLaunch(options: { params?: Record<string, unknown>; frontma
     assert.equal(activity.activity.phase, shutdowns ? "done" : "waiting");
     assert.equal(__test__.runningSubagents.get(result.details.id)?.interactive, options.interactive);
     const artifact = launched.args.find((arg: string) => arg.startsWith("@"));
-    if (artifact) {
-      const prompt = readFileSync(artifact.slice(1), "utf8");
-      assert.equal(prompt.includes("Complete your task autonomously."), options.autoExit);
-      assert.equal(prompt.includes("Your FINAL assistant message should summarize"), options.autoExit);
-    }
+    if (params.fork) assert.equal(artifact, undefined, "fork task retains direct delivery");
+    const prompt = artifact ? readFileSync(artifact.slice(1), "utf8") : launched.args.at(-1);
+    assert.ok(prompt.includes(String(params.task)), "launch preserves requested task");
+    assert.equal(prompt.includes("Complete your task autonomously."), options.autoExit);
+    assert.equal(prompt.includes("Your FINAL assistant message should summarize"), options.autoExit);
+    assert.equal(prompt.includes("When finished, call the subagent_done tool."), !options.autoExit);
+    assert.equal(prompt.includes("Your FINAL assistant message (before calling subagent_done or before the user exits) should summarize"), !options.autoExit);
   } finally {
     parent.events.get("session_shutdown")?.({}, {});
     process.chdir(previousCwd);

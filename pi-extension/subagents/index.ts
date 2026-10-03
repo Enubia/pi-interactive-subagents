@@ -280,7 +280,7 @@ function discoverAgentDefinitions(): ListedAgentDefinition[] {
 function resolveSubagentPaths(
   params: Static<typeof SubagentParams>,
   agentDefs: AgentDefaults | null,
-): { effectiveCwd: string | null; localAgentDir: string | null; effectiveAgentDir: string } {
+): { effectiveCwd: string | null; effectiveAgentDir: string } {
   const rawCwd = params.cwd ?? agentDefs?.cwd ?? null;
   const cwdIsFromAgent = !params.cwd && agentDefs?.cwd != null;
   const cwdBase = cwdIsFromAgent ? getAgentConfigDir() : process.cwd();
@@ -289,10 +289,7 @@ function resolveSubagentPaths(
       ? rawCwd
       : join(cwdBase, rawCwd)
     : null;
-  const localAgentDir = effectiveCwd ? join(effectiveCwd, ".pi", "agent") : null;
-  const effectiveAgentDir =
-    localAgentDir && existsSync(localAgentDir) ? localAgentDir : getAgentConfigDir();
-  return { effectiveCwd, localAgentDir, effectiveAgentDir };
+  return { effectiveCwd, effectiveAgentDir: getAgentConfigDir() };
 }
 
 function getDefaultSessionDirFor(cwd: string, agentDir: string): string {
@@ -1008,7 +1005,7 @@ async function launchSubagent(
   const sessionId = ctx.sessionManager.getSessionId();
   const artifactDir = getArtifactDir(ctx.sessionManager.getSessionDir(), sessionId);
 
-  const { effectiveCwd, localAgentDir, effectiveAgentDir } = resolveSubagentPaths(params, agentDefs);
+  const { effectiveCwd, effectiveAgentDir } = resolveSubagentPaths(params, agentDefs);
   const targetCwdForSession = effectiveCwd ?? ctx.cwd;
   const sessionDir = getDefaultSessionDirFor(targetCwdForSession, effectiveAgentDir);
 
@@ -1177,11 +1174,7 @@ async function launchSubagent(
   // Build env prefix: denied tools + subagent identity + config dir propagation
   const envParts: string[] = [];
 
-  // If the target cwd has its own .pi/agent/, use that as the config root.
-  // Otherwise propagate the current/global agent dir.
-  if (localAgentDir && existsSync(localAgentDir)) {
-    envParts.push(`PI_CODING_AGENT_DIR=${shellEscape(localAgentDir)}`);
-  } else if (process.env.PI_CODING_AGENT_DIR) {
+  if (process.env.PI_CODING_AGENT_DIR) {
     envParts.push(`PI_CODING_AGENT_DIR=${shellEscape(process.env.PI_CODING_AGENT_DIR)}`);
   }
 
@@ -1230,7 +1223,6 @@ async function launchSubagent(
   }
 
   // Resolve cwd — param overrides agent default, supports absolute and relative paths.
-  // This was already computed above so session placement, PI_CODING_AGENT_DIR, and cd agree.
   const cdPrefix = effectiveCwd ? `cd ${shellEscape(effectiveCwd)} && ` : "";
 
   const piCommand = cdPrefix + envPrefix + parts.join(" ");

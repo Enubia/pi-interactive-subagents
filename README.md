@@ -420,7 +420,7 @@ deny-tools: subagent
 
 ## Role Folders
 
-The `cwd` parameter lets sub-agents start in a specific directory with its own configuration:
+The `cwd` parameter lets sub-agents start in a specific directory with its own project configuration. It does not change the agent config root: sub-agents inherit the parent's `PI_CODING_AGENT_DIR`, or use `~/.pi/agent` when unset. A target folder's `.pi/agent` is not selected automatically.
 
 ```
 project/

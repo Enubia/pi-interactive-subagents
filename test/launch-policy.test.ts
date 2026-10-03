@@ -1,9 +1,9 @@
 import { it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import childExtension from "../pi-extension/subagents/subagent-done.ts";
 import { readSubagentActivityFile } from "../pi-extension/subagents/activity.ts";
 
@@ -102,6 +102,90 @@ async function verifyLaunch(options: { params?: Record<string, unknown>; frontma
     for (const key of Object.keys(process.env)) if (!(key in previousEnv)) delete process.env[key];
     Object.assign(process.env, previousEnv);
     rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function verifyConfigRootLaunch(options: { parentConfig: "explicit" | "default"; request?: "absolute" | "relative" | "agent-absolute" | "agent-relative" | "agent-override" | "resume" }) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "launch-config-root-")));
+  const envKeys = ["HOME", "PI_CODING_AGENT_DIR", "PI_SUBAGENT_SHELL_READY_DELAY_MS", "PI_DENY_TOOLS", "PI_SUBAGENT_AGENT"];
+  const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+  const previousCwd = process.cwd();
+  const parent = extensionApi();
+  try {
+    process.env.HOME = join(root, "home");
+    assert.equal(homedir(), join(root, "home"));
+    const expectedConfigDir = options.parentConfig === "explicit"
+      ? join(root, "parent-config")
+      : join(root, "home", ".pi", "agent");
+    if (options.parentConfig === "explicit") process.env.PI_CODING_AGENT_DIR = expectedConfigDir;
+    else delete process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS = "0";
+    delete process.env.PI_DENY_TOOLS;
+    delete process.env.PI_SUBAGENT_AGENT;
+    const projectDir = join(root, "project");
+    const targetCwd = options.request === "resume" ? projectDir
+      : options.request === "agent-relative" ? join(expectedConfigDir, "child")
+      : join(projectDir, "child");
+    mkdirSync(projectDir, { recursive: true });
+    mkdirSync(join(targetCwd, ".pi", "agent"), { recursive: true });
+    process.chdir(projectDir);
+    const params: Record<string, unknown> = { name: "child", task: "Finish task" };
+    if (options.request?.startsWith("agent-")) {
+      const agentsDir = join(projectDir, ".pi", "agents");
+      mkdirSync(agentsDir, { recursive: true });
+      const agentCwd = options.request === "agent-absolute" ? targetCwd : "child";
+      writeFileSync(join(agentsDir, "config-root-fixture.md"), `---\ncwd: ${agentCwd}\n---\nFixture identity`);
+      params.agent = "config-root-fixture";
+      if (options.request === "agent-override") params.cwd = "child";
+    } else {
+      params.cwd = options.request === "relative" ? "child" : targetCwd;
+    }
+    const expectedSessionDir = join(expectedConfigDir, "sessions", `--${targetCwd.slice(1).replaceAll("/", "-")}--`);
+    if (options.request === "resume") {
+      params.sessionPath = join(expectedSessionDir, "existing.jsonl");
+      mkdirSync(expectedSessionDir, { recursive: true });
+      writeFileSync(String(params.sessionPath), JSON.stringify({ type: "session", version: 3, id: "existing", cwd: targetCwd }) + "\n");
+    }
+    const sessionFile = join(root, "parent.jsonl");
+    writeFileSync(sessionFile, JSON.stringify({ type: "session", version: 3, id: "parent", cwd: projectDir }) + "\n");
+    parentExtension(parent.api);
+    const ctx = { cwd: projectDir, sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "parent", getSessionDir: () => root } };
+    const tool = options.request === "resume" ? "subagent_resume" : "subagent";
+    const result = await parent.tools.get(tool).execute("call", params, undefined, undefined, ctx);
+    assert.equal(result.details.status, "started");
+    const output = execFileSync("bash", ["-c", `pi() { node -e 'console.log(JSON.stringify({configDir:process.env.PI_CODING_AGENT_DIR,cwd:process.cwd(),session:process.env.PI_SUBAGENT_SESSION,args:process.argv.slice(1)}))' -- "$@"; }; ${launchCommand}`], { encoding: "utf8" });
+    const launched = JSON.parse(output.split("\n")[0]);
+    assert.equal(launched.cwd, targetCwd, "child starts in requested cwd");
+    assert.equal(launched.configDir, options.parentConfig === "explicit" ? expectedConfigDir : undefined, "cwd does not override inherited config environment");
+    const reportedSession = options.request === "resume" ? result.details.sessionPath : result.details.sessionFile;
+    assert.equal(dirname(reportedSession), expectedSessionDir, "reported session stays under inherited config root");
+    if (options.request === "resume") assert.equal(reportedSession, params.sessionPath, "resume retains existing session path");
+    assert.equal(launched.session, reportedSession);
+    assert.equal(launched.args[launched.args.indexOf("--session") + 1], reportedSession);
+  } finally {
+    parent.events.get("session_shutdown")?.({}, {});
+    process.chdir(previousCwd);
+    for (const [key, value] of previousEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+it("explicit cwd containing .pi/agent preserves parent config root", async () => {
+  await verifyConfigRootLaunch({ parentConfig: "explicit" });
+});
+
+it("explicit cwd containing .pi/agent uses global default config when parent env is unset", async () => {
+  await verifyConfigRootLaunch({ parentConfig: "default" });
+});
+
+for (const parentConfig of ["explicit", "default"] as const) {
+  for (const request of ["relative", "agent-absolute", "agent-relative", "agent-override", "resume"] as const) {
+    it(`${request} launch with ${parentConfig} config preserves root and cwd resolution`, async () => {
+      await verifyConfigRootLaunch({ parentConfig, request });
+    });
   }
 }
 

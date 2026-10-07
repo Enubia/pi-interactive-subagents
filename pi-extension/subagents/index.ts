@@ -1356,7 +1356,10 @@ async function watchSubagent(
       return { name, task, summary, exitCode: result.exitCode, elapsed, ...(sessionId ? { claudeSessionId: sessionId } : {}) };
     }
 
-    // Pi subagent result extraction
+    const idle: IdleCompletion | null = result.reason === "idle" ? idleState.completion : null;
+    if (!idle) await closeSurfaceAfterExit(surface);
+    else if (idle.closePane) closeSurface(surface);
+
     let summary: string;
     if (existsSync(sessionFile)) {
       const allEntries = getNewEntries(sessionFile, 0);
@@ -1377,9 +1380,6 @@ async function watchSubagent(
           : "Sub-agent exited without output";
     }
 
-    const idle: IdleCompletion | null = result.reason === "idle" ? idleState.completion : null;
-    if (!idle) await closeSurfaceAfterExit(surface);
-    else if (idle.closePane) closeSurface(surface);
     runningSubagents.delete(running.id);
 
     return {

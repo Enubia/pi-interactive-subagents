@@ -16,6 +16,7 @@ mock.module("../pi-extension/subagents/cmux.ts", {
     sendLongCommand: (_surface: string, command: string) => { launchCommand = command; },
     pollForExit: () => new Promise(() => {}),
     closeSurface: () => {},
+    closeSurfaceAfterExit: async () => {},
     getMuxBackend: () => "tmux",
     sendEscape: () => {},
     shellEscape: (value: string) => `'${value.replace(/'/g, `'\\''`)}'`,

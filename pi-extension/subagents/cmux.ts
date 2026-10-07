@@ -1187,6 +1187,27 @@ export async function readScreenAsync(surface: string, lines = 50): Promise<stri
   return tailLines(stdout, lines);
 }
 
+export async function closeSurfaceAfterExit(
+  surface: string,
+  options: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 3000;
+  const intervalMs = options.intervalMs ?? 200;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const screen = await readScreenAsync(surface, 5);
+      if (/__SUBAGENT_DONE_\d+__/.test(screen)) break;
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  closeSurface(surface);
+}
+
 /**
  * Close a pane.
  */
@@ -1194,8 +1215,9 @@ export function closeSurface(surface: string): void {
   const backend = requireMuxBackend();
 
   if (backend === "cmux") {
-    execSync(`cmux close-surface --surface ${shellEscape(surface)}`, {
+    execFileSync("cmux", ["close-surface", "--force", "--surface", surface], {
       encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
     });
     return;
   }

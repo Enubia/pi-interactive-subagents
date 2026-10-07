@@ -21,6 +21,7 @@ import {
   sendLongCommand,
   pollForExit,
   closeSurface,
+  closeSurfaceAfterExit,
   getMuxBackend,
   sendEscape,
   shellEscape,
@@ -1349,7 +1350,7 @@ async function watchSubagent(
         try { unlinkSync(running.sentinelFile + ".transcript"); } catch {}
       }
 
-      closeSurface(surface);
+      await closeSurfaceAfterExit(surface);
       runningSubagents.delete(running.id);
 
       return { name, task, summary, exitCode: result.exitCode, elapsed, ...(sessionId ? { claudeSessionId: sessionId } : {}) };
@@ -1377,7 +1378,8 @@ async function watchSubagent(
     }
 
     const idle: IdleCompletion | null = result.reason === "idle" ? idleState.completion : null;
-    if (!idle || idle.closePane) closeSurface(surface);
+    if (!idle) await closeSurfaceAfterExit(surface);
+    else if (idle.closePane) closeSurface(surface);
     runningSubagents.delete(running.id);
 
     return {

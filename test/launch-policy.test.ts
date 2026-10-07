@@ -23,6 +23,8 @@ mock.module("../pi-extension/subagents/cmux.ts", {
     renameCurrentTab: () => {},
     renameWorkspace: () => {},
     readScreen: () => "",
+    weztermRootPaneId: () => undefined,
+    WEZTERM_ROOT_PANE_ENV: "PI_SUBAGENT_WEZTERM_ROOT_PANE",
   },
 });
 const { default: parentExtension, __test__ } = await import("../pi-extension/subagents/index.ts");

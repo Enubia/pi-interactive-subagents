@@ -741,6 +741,153 @@ function createCmuxSplitSurface(
   }
 }
 
+export const WEZTERM_ROOT_PANE_ENV = "PI_SUBAGENT_WEZTERM_ROOT_PANE";
+const WEZTERM_ROOT_SHARE_SINGLE = 0.5;
+const WEZTERM_ROOT_SHARE_MULTIPLE = 0.4;
+const WEZTERM_CELL_HEIGHT_WIDTH_RATIO = 2;
+
+export interface WezTermPaneSnapshot {
+  pane_id: number;
+  tab_id: number;
+  left_col?: number;
+  size?: { rows?: number; cols?: number };
+}
+
+export type WezTermSplitDirection = "right" | "down";
+
+export interface WezTermPlacementPlan {
+  targetPaneId: number;
+  direction: WezTermSplitDirection;
+}
+
+export interface WezTermRootResize {
+  direction: "Left" | "Right";
+  amount: number;
+}
+
+export function weztermRootPaneId(): string | undefined {
+  return process.env[WEZTERM_ROOT_PANE_ENV] || process.env.WEZTERM_PANE || undefined;
+}
+
+function weztermPaneArea(pane: WezTermPaneSnapshot): number {
+  return (pane.size?.rows ?? 0) * (pane.size?.cols ?? 0);
+}
+
+function weztermTabLayout(panes: WezTermPaneSnapshot[], rootPaneId: number) {
+  const root = panes.find((pane) => pane.pane_id === rootPaneId);
+  if (!root) return null;
+  const siblings = panes.filter(
+    (pane) => pane.tab_id === root.tab_id && pane.pane_id !== rootPaneId,
+  );
+  return { root, siblings };
+}
+
+export function selectWezTermPlacement(
+  panes: WezTermPaneSnapshot[],
+  rootPaneId: number,
+): WezTermPlacementPlan | null {
+  const layout = weztermTabLayout(panes, rootPaneId);
+  if (!layout) return null;
+  if (layout.siblings.length === 0) return { targetPaneId: rootPaneId, direction: "right" };
+
+  const target = layout.siblings.reduce((largest, pane) =>
+    weztermPaneArea(pane) > weztermPaneArea(largest) ? pane : largest,
+  );
+  const cols = target.size?.cols ?? 0;
+  const rows = target.size?.rows ?? 0;
+  const direction = rows * WEZTERM_CELL_HEIGHT_WIDTH_RATIO > cols ? "down" : "right";
+  return { targetPaneId: target.pane_id, direction };
+}
+
+export function planWezTermRootResize(
+  panes: WezTermPaneSnapshot[],
+  rootPaneId: number,
+  pendingSubagents = 0,
+): WezTermRootResize | null {
+  const layout = weztermTabLayout(panes, rootPaneId);
+  if (!layout || layout.siblings.length === 0) return null;
+  const subagentCount = layout.siblings.length + pendingSubagents;
+
+  const tabPanes = [layout.root, ...layout.siblings];
+  const left = Math.min(...tabPanes.map((pane) => pane.left_col ?? 0));
+  if ((layout.root.left_col ?? 0) !== left) return null;
+  const right = Math.max(...tabPanes.map((pane) => (pane.left_col ?? 0) + (pane.size?.cols ?? 0)));
+  const rootCols = layout.root.size?.cols ?? 0;
+  if (rootCols >= right - left) return null;
+
+  const share = subagentCount === 1 ? WEZTERM_ROOT_SHARE_SINGLE : WEZTERM_ROOT_SHARE_MULTIPLE;
+  const delta = rootCols - Math.round((right - left) * share);
+  if (Math.abs(delta) <= 1) return null;
+  return delta > 0 ? { direction: "Left", amount: delta } : { direction: "Right", amount: -delta };
+}
+
+function listWezTermPanes(): WezTermPaneSnapshot[] {
+  return JSON.parse(
+    execFileSync("wezterm", ["cli", "list", "--format", "json"], { encoding: "utf8" }),
+  ) as WezTermPaneSnapshot[];
+}
+
+function rebalanceWezTermRoot(pendingSubagents = 0): void {
+  const rootPaneId = Number(weztermRootPaneId());
+  if (!Number.isInteger(rootPaneId)) return;
+  try {
+    const resize = planWezTermRootResize(listWezTermPanes(), rootPaneId, pendingSubagents);
+    if (!resize) return;
+    execFileSync(
+      "wezterm",
+      [
+        "cli",
+        "adjust-pane-size",
+        "--pane-id",
+        String(rootPaneId),
+        "--amount",
+        String(resize.amount),
+        resize.direction,
+      ],
+      { encoding: "utf8" },
+    );
+  } catch {}
+}
+
+function splitWezTermPane(
+  name: string,
+  direction: "left" | "right" | "up" | "down",
+  fromSurface?: string,
+): string {
+  const args = ["cli", "split-pane"];
+  if (direction === "left") args.push("--left");
+  else if (direction === "right") args.push("--right");
+  else if (direction === "up") args.push("--top");
+  else args.push("--bottom");
+  args.push("--cwd", process.cwd());
+  if (fromSurface) {
+    args.push("--pane-id", fromSurface);
+  }
+  const paneId = execFileSync("wezterm", args, { encoding: "utf8" }).trim();
+  if (!paneId || !/^\d+$/.test(paneId)) {
+    throw new Error(`Unexpected wezterm split-pane output: ${paneId || "(empty)"}`);
+  }
+  try {
+    execFileSync("wezterm", ["cli", "set-tab-title", "--pane-id", paneId, name], {
+      encoding: "utf8",
+    });
+  } catch {}
+  return paneId;
+}
+
+function createWezTermSurface(name: string): string {
+  const rootPaneId = Number(weztermRootPaneId());
+  let plan: WezTermPlacementPlan | null = null;
+  if (Number.isInteger(rootPaneId)) {
+    rebalanceWezTermRoot(1);
+    try {
+      plan = selectWezTermPlacement(listWezTermPanes(), rootPaneId);
+    } catch {}
+  }
+  if (!plan) return splitWezTermPane(name, "right");
+  return splitWezTermPane(name, plan.direction, String(plan.targetPaneId));
+}
+
 /**
  * Create a new terminal surface for a subagent.
  *
@@ -774,6 +921,10 @@ export function createSurface(name: string): string {
 
   if (backend === "zellij") {
     return createZellijSurface(name);
+  }
+
+  if (backend === "wezterm") {
+    return createWezTermSurface(name);
   }
 
   // On tmux, target the parent pi's pane so splits follow the agent, not the user's focus.
@@ -847,27 +998,7 @@ export function createSurfaceSplit(
   }
 
   if (backend === "wezterm") {
-    const args = ["cli", "split-pane"];
-    if (direction === "left") args.push("--left");
-    else if (direction === "right") args.push("--right");
-    else if (direction === "up") args.push("--top");
-    else args.push("--bottom");
-    args.push("--cwd", process.cwd());
-    if (fromSurface) {
-      args.push("--pane-id", fromSurface);
-    }
-    const paneId = execFileSync("wezterm", args, { encoding: "utf8" }).trim();
-    if (!paneId || !/^\d+$/.test(paneId)) {
-      throw new Error(`Unexpected wezterm split-pane output: ${paneId || "(empty)"}`);
-    }
-    try {
-      execFileSync("wezterm", ["cli", "set-tab-title", "--pane-id", paneId, name], {
-        encoding: "utf8",
-      });
-    } catch {
-      // Optional — tab title is cosmetic.
-    }
-    return paneId;
+    return splitWezTermPane(name, direction, fromSurface);
   }
 
   // zellij
@@ -1231,6 +1362,7 @@ export function closeSurface(surface: string): void {
     execFileSync("wezterm", ["cli", "kill-pane", "--pane-id", surface], {
       encoding: "utf8",
     });
+    rebalanceWezTermRoot();
     return;
   }
 

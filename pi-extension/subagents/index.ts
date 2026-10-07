@@ -28,6 +28,8 @@ import {
   renameCurrentTab,
   renameWorkspace,
   readScreen,
+  weztermRootPaneId,
+  WEZTERM_ROOT_PANE_ENV,
 } from "./cmux.ts";
 
 import {
@@ -1182,6 +1184,10 @@ async function launchSubagent(
   if (denySet.size > 0) {
     envParts.push(`PI_DENY_TOOLS=${shellEscape([...denySet].join(","))}`);
   }
+  const rootPane = weztermRootPaneId();
+  if (rootPane) {
+    envParts.push(`${WEZTERM_ROOT_PANE_ENV}=${shellEscape(rootPane)}`);
+  }
   envParts.push(`PI_SUBAGENT_NAME=${shellEscape(params.name)}`);
   if (params.agent) {
     envParts.push(`PI_SUBAGENT_AGENT=${shellEscape(params.agent)}`);
@@ -1895,6 +1901,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const resumeEnvParts: string[] = [];
         if (process.env.PI_CODING_AGENT_DIR) {
           resumeEnvParts.push(`PI_CODING_AGENT_DIR=${shellEscape(process.env.PI_CODING_AGENT_DIR)}`);
+        }
+        const resumeRootPane = weztermRootPaneId();
+        if (resumeRootPane) {
+          resumeEnvParts.push(`${WEZTERM_ROOT_PANE_ENV}=${shellEscape(resumeRootPane)}`);
         }
         resumeEnvParts.push(`PI_SUBAGENT_NAME=${shellEscape(name)}`);
         resumeEnvParts.push(`PI_SUBAGENT_SESSION=${shellEscape(params.sessionPath)}`);

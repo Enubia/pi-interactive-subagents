@@ -30,6 +30,8 @@ import {
   predictZellijSplitDirection,
   selectZellijPlacement,
   selectZellijStackPlacement,
+  selectWezTermPlacement,
+  planWezTermRootResize,
 } from "../pi-extension/subagents/cmux.ts";
 import {
   advanceStatusState,
@@ -2277,6 +2279,65 @@ describe("cmux.ts", () => {
         ),
         "pane:4",
       );
+    });
+  });
+
+  describe("wezterm placement", () => {
+    const pane = (pane_id: number, rows: number, cols: number, tab_id = 1) => ({
+      pane_id,
+      tab_id,
+      size: { rows, cols },
+    });
+
+    it("splits the root pane right when it is alone in its tab", () => {
+      assert.deepEqual(selectWezTermPlacement([pane(1, 70, 300), pane(9, 70, 300, 2)], 1), {
+        targetPaneId: 1,
+        direction: "right",
+      });
+    });
+
+    it("never splits the root pane once siblings exist and picks the largest sibling", () => {
+      const plan = selectWezTermPlacement(
+        [pane(1, 70, 180), pane(2, 35, 120), pane(3, 35, 120), pane(4, 70, 200, 2)],
+        1,
+      );
+      assert.equal(plan?.targetPaneId, 2);
+    });
+
+    it("splits along the longer visual axis", () => {
+      assert.equal(selectWezTermPlacement([pane(1, 70, 180), pane(2, 70, 120)], 1)?.direction, "down");
+      assert.equal(selectWezTermPlacement([pane(1, 70, 180), pane(2, 35, 120)], 1)?.direction, "right");
+    });
+
+    it("returns null when the root pane is unknown", () => {
+      assert.equal(selectWezTermPlacement([pane(2, 70, 120)], 1), null);
+    });
+
+    const placed = (pane_id: number, left_col: number, cols: number, tab_id = 1) => ({
+      pane_id,
+      tab_id,
+      left_col,
+      size: { rows: 70, cols },
+    });
+
+    it("shrinks the root to 40% before a second subagent is added", () => {
+      assert.deepEqual(
+        planWezTermRootResize([placed(1, 0, 150), placed(2, 151, 150)], 1, 1),
+        { direction: "Left", amount: 30 },
+      );
+    });
+
+    it("restores the root to 50% when one subagent remains", () => {
+      assert.deepEqual(planWezTermRootResize([placed(1, 0, 120), placed(2, 121, 179)], 1), {
+        direction: "Right",
+        amount: 30,
+      });
+    });
+
+    it("leaves the root alone when already balanced, alone, or not leftmost", () => {
+      assert.equal(planWezTermRootResize([placed(1, 0, 150), placed(2, 151, 150)], 1), null);
+      assert.equal(planWezTermRootResize([placed(1, 0, 300)], 1, 1), null);
+      assert.equal(planWezTermRootResize([placed(2, 0, 150), placed(1, 151, 150)], 1, 1), null);
     });
   });
 

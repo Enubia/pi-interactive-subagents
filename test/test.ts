@@ -1084,10 +1084,14 @@ describe("subagent discovery", () => {
     );
   });
 
-  it("buildSubagentToolAllowlist preserves requested tools and adds child control tools", () => {
+  it("buildSubagentToolAllowlist preserves requested tools and adds codemode and child control tools", () => {
     assert.equal(
       testApi.buildSubagentToolAllowlist("read,bash,web_search"),
-      "read,bash,web_search,caller_ping,subagent_done",
+      "read,bash,web_search,codemode,caller_ping,subagent_done",
+    );
+    assert.equal(
+      testApi.buildSubagentToolAllowlist("codemode,read"),
+      "codemode,read,caller_ping,subagent_done",
     );
   });
 

@@ -718,7 +718,7 @@ function updateWidget() {
  * first positional message so that /skill: args land in messages[1..] and arrive
  * as standalone prompts in the child session.
  */
-const SUBAGENT_CONTROL_TOOLS = ["caller_ping", "subagent_done"] as const;
+const ALWAYS_ALLOWED_TOOLS = ["codemode", "caller_ping", "subagent_done"] as const;
 
 /**
  * Build the child --tools allowlist.
@@ -737,7 +737,7 @@ function buildSubagentToolAllowlist(effectiveTools?: string): string | null {
   if (requested.length === 0) return null;
 
   const allow = new Set(requested);
-  for (const tool of SUBAGENT_CONTROL_TOOLS) {
+  for (const tool of ALWAYS_ALLOWED_TOOLS) {
     allow.add(tool);
   }
 

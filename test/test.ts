@@ -2295,6 +2295,7 @@ describe("cmux.ts", () => {
 
     it("splits the root pane right when it is alone in its tab", () => {
       assert.deepEqual(selectWezTermPlacement([pane(1, 70, 300), pane(9, 70, 300, 2)], 1), {
+        kind: "split",
         targetPaneId: 1,
         direction: "right",
       });
@@ -2305,12 +2306,73 @@ describe("cmux.ts", () => {
         [pane(1, 70, 180), pane(2, 35, 120), pane(3, 35, 120), pane(4, 70, 200, 2)],
         1,
       );
-      assert.equal(plan?.targetPaneId, 2);
+      assert.deepEqual(plan, { kind: "split", targetPaneId: 2, direction: "right" });
     });
 
-    it("splits along the longer visual axis", () => {
-      assert.equal(selectWezTermPlacement([pane(1, 70, 180), pane(2, 70, 120)], 1)?.direction, "down");
-      assert.equal(selectWezTermPlacement([pane(1, 70, 180), pane(2, 35, 120)], 1)?.direction, "right");
+    it("splits along the longer visual axis, favouring wide panes when nearly square", () => {
+      const direction = (rows: number, cols: number) => {
+        const plan = selectWezTermPlacement([pane(1, 70, 180), pane(2, rows, cols)], 1);
+        return plan?.kind === "split" ? plan.direction : undefined;
+      };
+      assert.equal(direction(70, 120), "down");
+      assert.equal(direction(35, 120), "right");
+      assert.equal(direction(74, 156), "down");
+      assert.equal(direction(74, 187), "right");
+    });
+
+    const at = (pane_id: number, top_row: number, left_col: number, rows: number, cols: number, tab_id = 1) => ({
+      pane_id,
+      tab_id,
+      top_row,
+      left_col,
+      size: { rows, cols },
+    });
+
+    it("treats off-by-one sizes as ties and fills the top-left pane first", () => {
+      const plan = selectWezTermPlacement(
+        [at(1, 0, 0, 74, 126), at(81, 0, 127, 74, 93), at(82, 0, 221, 36, 93), at(84, 37, 221, 37, 93)],
+        1,
+      );
+      assert.deepEqual(plan, { kind: "split", targetPaneId: 81, direction: "down" });
+    });
+
+    it("opens an overflow tab once the root tab holds the maximum number of subagents", () => {
+      const full = [
+        at(1, 0, 0, 74, 126),
+        at(2, 0, 127, 36, 93),
+        at(3, 37, 127, 37, 93),
+        at(4, 0, 221, 36, 93),
+        at(5, 37, 221, 37, 93),
+      ];
+      assert.deepEqual(selectWezTermPlacement(full, 1), { kind: "tab" });
+      assert.deepEqual(selectWezTermPlacement(full, 1, [], 5)?.kind, "split");
+    });
+
+    it("tiles into an overflow tab with room before opening another", () => {
+      const full = [
+        at(1, 0, 0, 74, 126),
+        at(2, 0, 127, 36, 93),
+        at(3, 37, 127, 37, 93),
+        at(4, 0, 221, 36, 93),
+        at(5, 37, 221, 37, 93),
+      ];
+      const overflow = [at(10, 0, 0, 74, 156, 7), at(11, 0, 157, 74, 157, 7)];
+      assert.deepEqual(selectWezTermPlacement([...full, ...overflow], 1, [7]), {
+        kind: "split",
+        targetPaneId: 10,
+        direction: "down",
+      });
+      const fullOverflow = [...overflow, at(12, 0, 0, 74, 100, 7), at(13, 0, 0, 74, 100, 7)];
+      assert.deepEqual(selectWezTermPlacement([...full, ...fullOverflow], 1, [7]), { kind: "tab" });
+    });
+
+    it("refills the root tab before overflow tabs when a slot frees up", () => {
+      const plan = selectWezTermPlacement(
+        [at(1, 0, 0, 74, 126), at(2, 0, 127, 74, 93), at(4, 0, 221, 74, 93), at(10, 0, 0, 74, 314, 7)],
+        1,
+        [7],
+      );
+      assert.deepEqual(plan, { kind: "split", targetPaneId: 2, direction: "down" });
     });
 
     it("returns null when the root pane is unknown", () => {

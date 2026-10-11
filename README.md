@@ -50,6 +50,8 @@ zellij --session pi   # then run: pi
 
 Optional: set `PI_SUBAGENT_MUX=cmux|tmux|zellij|wezterm` to force a specific backend.
 
+On WezTerm, subagents tile next to the parent pane until the tab holds `PI_SUBAGENT_WEZTERM_MAX_PANES_PER_TAB` subagents (defaults to `4`); further subagents open in overflow tabs, which tile up to the same limit.
+
 If your shell startup is slow and subagent commands sometimes get dropped before the prompt is ready, set `PI_SUBAGENT_SHELL_READY_DELAY_MS` to a higher value (defaults to `500`):
 
 ```bash

@@ -745,20 +745,23 @@ export const WEZTERM_ROOT_PANE_ENV = "PI_SUBAGENT_WEZTERM_ROOT_PANE";
 const WEZTERM_ROOT_SHARE_SINGLE = 0.5;
 const WEZTERM_ROOT_SHARE_MULTIPLE = 0.4;
 const WEZTERM_CELL_HEIGHT_WIDTH_RATIO = 2;
+const WEZTERM_DOWN_SPLIT_BIAS = 1.15;
+const WEZTERM_AREA_TIE_TOLERANCE = 0.1;
+export const DEFAULT_WEZTERM_MAX_PANES_PER_TAB = 4;
 
 export interface WezTermPaneSnapshot {
   pane_id: number;
   tab_id: number;
   left_col?: number;
+  top_row?: number;
   size?: { rows?: number; cols?: number };
 }
 
 export type WezTermSplitDirection = "right" | "down";
 
-export interface WezTermPlacementPlan {
-  targetPaneId: number;
-  direction: WezTermSplitDirection;
-}
+export type WezTermPlacementPlan =
+  | { kind: "split"; targetPaneId: number; direction: WezTermSplitDirection }
+  | { kind: "tab" };
 
 export interface WezTermRootResize {
   direction: "Left" | "Right";
@@ -782,21 +785,44 @@ function weztermTabLayout(panes: WezTermPaneSnapshot[], rootPaneId: number) {
   return { root, siblings };
 }
 
+function planWezTermSplit(panes: WezTermPaneSnapshot[]): WezTermPlacementPlan {
+  const largestArea = Math.max(...panes.map(weztermPaneArea));
+  const [target] = panes
+    .filter((pane) => weztermPaneArea(pane) >= largestArea * (1 - WEZTERM_AREA_TIE_TOLERANCE))
+    .sort(
+      (a, b) =>
+        (a.top_row ?? 0) - (b.top_row ?? 0) ||
+        (a.left_col ?? 0) - (b.left_col ?? 0) ||
+        a.pane_id - b.pane_id,
+    );
+  const cols = target.size?.cols ?? 0;
+  const rows = target.size?.rows ?? 0;
+  const direction =
+    rows * WEZTERM_CELL_HEIGHT_WIDTH_RATIO * WEZTERM_DOWN_SPLIT_BIAS >= cols ? "down" : "right";
+  return { kind: "split", targetPaneId: target.pane_id, direction };
+}
+
 export function selectWezTermPlacement(
   panes: WezTermPaneSnapshot[],
   rootPaneId: number,
+  overflowTabIds: number[] = [],
+  maxPanesPerTab = DEFAULT_WEZTERM_MAX_PANES_PER_TAB,
 ): WezTermPlacementPlan | null {
   const layout = weztermTabLayout(panes, rootPaneId);
   if (!layout) return null;
-  if (layout.siblings.length === 0) return { targetPaneId: rootPaneId, direction: "right" };
+  if (layout.siblings.length === 0) {
+    return { kind: "split", targetPaneId: rootPaneId, direction: "right" };
+  }
+  if (layout.siblings.length < maxPanesPerTab) return planWezTermSplit(layout.siblings);
 
-  const target = layout.siblings.reduce((largest, pane) =>
-    weztermPaneArea(pane) > weztermPaneArea(largest) ? pane : largest,
-  );
-  const cols = target.size?.cols ?? 0;
-  const rows = target.size?.rows ?? 0;
-  const direction = rows * WEZTERM_CELL_HEIGHT_WIDTH_RATIO > cols ? "down" : "right";
-  return { targetPaneId: target.pane_id, direction };
+  for (const tabId of overflowTabIds) {
+    if (tabId === layout.root.tab_id) continue;
+    const tabPanes = panes.filter((pane) => pane.tab_id === tabId);
+    if (tabPanes.length > 0 && tabPanes.length < maxPanesPerTab) {
+      return planWezTermSplit(tabPanes);
+    }
+  }
+  return { kind: "tab" };
 }
 
 export function planWezTermRootResize(
@@ -863,14 +889,56 @@ function splitWezTermPane(
   if (fromSurface) {
     args.push("--pane-id", fromSurface);
   }
-  const paneId = execFileSync("wezterm", args, { encoding: "utf8" }).trim();
+  return finishWezTermPane(execFileSync("wezterm", args, { encoding: "utf8" }), name, "split-pane");
+}
+
+function finishWezTermPane(output: string, name: string, command: string): string {
+  const paneId = output.trim();
   if (!paneId || !/^\d+$/.test(paneId)) {
-    throw new Error(`Unexpected wezterm split-pane output: ${paneId || "(empty)"}`);
+    throw new Error(`Unexpected wezterm ${command} output: ${paneId || "(empty)"}`);
   }
   try {
     execFileSync("wezterm", ["cli", "set-tab-title", "--pane-id", paneId, name], {
       encoding: "utf8",
     });
+  } catch {}
+  return paneId;
+}
+
+const weztermOverflowTabIds: number[] = [];
+
+function readWezTermFocusedPaneId(): number | undefined {
+  try {
+    const clients = JSON.parse(
+      execFileSync("wezterm", ["cli", "list-clients", "--format", "json"], { encoding: "utf8" }),
+    ) as { focused_pane_id?: number }[];
+    return clients.find((client) => Number.isInteger(client.focused_pane_id))?.focused_pane_id;
+  } catch {
+    return undefined;
+  }
+}
+
+function spawnWezTermOverflowTab(name: string, rootPaneId: number): string {
+  const focusedPaneId = readWezTermFocusedPaneId();
+  const paneId = finishWezTermPane(
+    execFileSync(
+      "wezterm",
+      ["cli", "spawn", "--pane-id", String(rootPaneId), "--cwd", process.cwd()],
+      { encoding: "utf8" },
+    ),
+    name,
+    "spawn",
+  );
+  if (focusedPaneId !== undefined) {
+    try {
+      execFileSync("wezterm", ["cli", "activate-pane", "--pane-id", String(focusedPaneId)], {
+        encoding: "utf8",
+      });
+    } catch {}
+  }
+  try {
+    const tabId = listWezTermPanes().find((pane) => pane.pane_id === Number(paneId))?.tab_id;
+    if (tabId !== undefined) weztermOverflowTabIds.push(tabId);
   } catch {}
   return paneId;
 }
@@ -881,10 +949,20 @@ function createWezTermSurface(name: string): string {
   if (Number.isInteger(rootPaneId)) {
     rebalanceWezTermRoot(1);
     try {
-      plan = selectWezTermPlacement(listWezTermPanes(), rootPaneId);
+      const panes = listWezTermPanes();
+      const liveTabIds = new Set(panes.map((pane) => pane.tab_id));
+      const liveOverflow = weztermOverflowTabIds.filter((tabId) => liveTabIds.has(tabId));
+      weztermOverflowTabIds.splice(0, weztermOverflowTabIds.length, ...liveOverflow);
+      plan = selectWezTermPlacement(
+        panes,
+        rootPaneId,
+        weztermOverflowTabIds,
+        envPositiveInteger("PI_SUBAGENT_WEZTERM_MAX_PANES_PER_TAB", DEFAULT_WEZTERM_MAX_PANES_PER_TAB),
+      );
     } catch {}
   }
   if (!plan) return splitWezTermPane(name, "right");
+  if (plan.kind === "tab") return spawnWezTermOverflowTab(name, rootPaneId);
   return splitWezTermPane(name, plan.direction, String(plan.targetPaneId));
 }
 

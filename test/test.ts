@@ -1252,6 +1252,13 @@ describe("subagent-done.ts", () => {
       assert.equal(shouldAutoExitOnAgentEnd(false, messages), false);
     });
 
+    it("stays open when compaction aborted the in-flight request (stopReason=error, abort message)", () => {
+      for (const errorMessage of ["This operation was aborted", "Request was aborted", "AbortError: The operation was aborted."]) {
+        const messages = [{ role: "assistant", stopReason: "error", errorMessage }];
+        assert.equal(shouldAutoExitOnAgentEnd(false, messages), false, errorMessage);
+      }
+    });
+
     it("still exits when the latest turn ended with stopReason=error", () => {
       // Auto-exit subagents must shut down on retry-exhaustion errors so the
       // parent is woken. The error sidecar (written separately) carries the
@@ -1285,6 +1292,11 @@ describe("subagent-done.ts", () => {
 
     it("returns null when the latest assistant turn was aborted by the user", () => {
       const messages = [{ role: "assistant", stopReason: "aborted" }];
+      assert.equal(findLatestAssistantError(messages), null);
+    });
+
+    it("returns null when the error is an abort (e.g. compaction interrupted the request)", () => {
+      const messages = [{ role: "assistant", stopReason: "error", errorMessage: "This operation was aborted" }];
       assert.equal(findLatestAssistantError(messages), null);
     });
 

@@ -13,6 +13,17 @@ export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted;
 }
 
+const ABORT_ERROR_RE = /\b(?:operation|request) was aborted\b|\bAbortError\b/i;
+
+export function isAbortedAssistant(msg: any): boolean {
+  if (msg?.stopReason === "aborted") return true;
+  return (
+    msg?.stopReason === "error" &&
+    typeof msg.errorMessage === "string" &&
+    ABORT_ERROR_RE.test(msg.errorMessage)
+  );
+}
+
 export function shouldAutoExitOnAgentEnd(
   _userTookOver: boolean,
   messages: any[] | undefined,
@@ -29,7 +40,7 @@ export function shouldAutoExitOnAgentEnd(
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg?.role === "assistant") {
-        return msg.stopReason !== "aborted";
+        return !isAbortedAssistant(msg);
       }
     }
   }
@@ -58,7 +69,7 @@ export function findLatestAssistantError(
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg?.role !== "assistant") continue;
-    if (msg.stopReason !== "error") return null;
+    if (msg.stopReason !== "error" || isAbortedAssistant(msg)) return null;
     const raw = typeof msg.errorMessage === "string" ? msg.errorMessage.trim() : "";
     return {
       errorMessage: raw || "Subagent agent loop ended with stopReason=error (no errorMessage field).",

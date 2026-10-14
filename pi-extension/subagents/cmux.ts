@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 
 const execFileAsync = promisify(execFile);
 
-export type MuxBackend = "cmux" | "tmux" | "zellij" | "wezterm";
+export type MuxBackend = "cmux" | "tmux" | "zellij" | "wezterm" | "vscode";
 
 const commandAvailability = new Map<string, boolean>();
 
@@ -43,7 +43,7 @@ function hasCommand(command: string): boolean {
 
 function muxPreference(): MuxBackend | null {
   const pref = (process.env.PI_SUBAGENT_MUX ?? "").trim().toLowerCase();
-  if (pref === "cmux" || pref === "tmux" || pref === "zellij" || pref === "wezterm") return pref;
+  if (pref === "cmux" || pref === "tmux" || pref === "zellij" || pref === "wezterm" || pref === "vscode") return pref;
   return null;
 }
 
@@ -61,6 +61,48 @@ function isZellijRuntimeAvailable(): boolean {
 
 function isWezTermRuntimeAvailable(): boolean {
   return !!process.env.WEZTERM_UNIX_SOCKET && hasCommand("wezterm");
+}
+
+function isVscodeRuntimeAvailable(): boolean {
+  return !!process.env.PI_VSCODE_SOCKET && existsSync(process.env.PI_VSCODE_SOCKET) && hasCommand("curl");
+}
+
+export function isVscodeAvailable(): boolean {
+  return isVscodeRuntimeAvailable();
+}
+
+function vscodeCurlArgs(op: string, body: Record<string, unknown>): string[] {
+  return [
+    "-sSf",
+    "--max-time",
+    "10",
+    "--unix-socket",
+    process.env.PI_VSCODE_SOCKET ?? "",
+    "-H",
+    "content-type: application/json",
+    "--data-binary",
+    JSON.stringify(body),
+    `http://pi-vscode/${op}`,
+  ];
+}
+
+function parseVscodeResponse(stdout: string): any {
+  return stdout.trim() ? JSON.parse(stdout) : {};
+}
+
+function vscodeSync(op: string, body: Record<string, unknown>): any {
+  return parseVscodeResponse(execFileSync("curl", vscodeCurlArgs(op, body), { encoding: "utf8" }));
+}
+
+async function vscodeAsync(op: string, body: Record<string, unknown>): Promise<any> {
+  const { stdout } = await execFileAsync("curl", vscodeCurlArgs(op, body), { encoding: "utf8" });
+  return parseVscodeResponse(stdout);
+}
+
+function createVscodeSurface(name: string): string {
+  const { surface } = vscodeSync("create", { name, parent: process.env.PI_XTERM_SESSION, cwd: process.cwd() });
+  if (typeof surface !== "string" || !surface) throw new Error("VS Code did not return a surface id");
+  return surface;
 }
 
 export function isCmuxAvailable(): boolean {
@@ -85,7 +127,9 @@ export function getMuxBackend(): MuxBackend | null {
   if (pref === "tmux") return isTmuxRuntimeAvailable() ? "tmux" : null;
   if (pref === "zellij") return isZellijRuntimeAvailable() ? "zellij" : null;
   if (pref === "wezterm") return isWezTermRuntimeAvailable() ? "wezterm" : null;
+  if (pref === "vscode") return isVscodeRuntimeAvailable() ? "vscode" : null;
 
+  if (isVscodeRuntimeAvailable()) return "vscode";
   if (isCmuxRuntimeAvailable()) return "cmux";
   if (isTmuxRuntimeAvailable()) return "tmux";
   if (isZellijRuntimeAvailable()) return "zellij";
@@ -110,6 +154,9 @@ export function muxSetupHint(): string {
   }
   if (pref === "wezterm") {
     return "Start pi inside WezTerm.";
+  }
+  if (pref === "vscode") {
+    return "Start pi from a Pi tab of the pi-xterm VS Code extension.";
   }
   return "Start pi inside cmux (`cmux pi`), tmux (`tmux new -A -s pi 'pi'`), zellij (`zellij --session pi`, then run `pi`), or WezTerm.";
 }
@@ -1005,6 +1052,10 @@ export function createSurface(name: string): string {
     return createWezTermSurface(name);
   }
 
+  if (backend === "vscode") {
+    return createVscodeSurface(name);
+  }
+
   // On tmux, target the parent pi's pane so splits follow the agent, not the user's focus.
   // See https://github.com/HazAT/pi-interactive-subagents/issues/12
   const fromSurface = backend === "tmux" ? process.env.TMUX_PANE : undefined;
@@ -1079,6 +1130,10 @@ export function createSurfaceSplit(
     return splitWezTermPane(name, direction, fromSurface);
   }
 
+  if (backend === "vscode") {
+    return createVscodeSurface(name);
+  }
+
   // zellij
   const directionArg = direction === "left" || direction === "right" ? "right" : "down";
   const args = ["new-pane", "--direction", directionArg, "--name", name, "--cwd", process.cwd()];
@@ -1147,6 +1202,11 @@ export function renameCurrentTab(title: string): void {
     if (paneId) args.push("--pane-id", paneId);
     args.push(title);
     execFileSync("wezterm", args, { encoding: "utf8" });
+    return;
+  }
+
+  if (backend === "vscode") {
+    vscodeSync("rename", { surface: process.env.PI_XTERM_SESSION, title });
     return;
   }
 
@@ -1242,6 +1302,11 @@ export function sendCommand(surface: string, command: string): void {
     return;
   }
 
+  if (backend === "vscode") {
+    vscodeSync("send", { surface, text: command + "\r" });
+    return;
+  }
+
   zellijActionSync(["write-chars", command], surface);
   zellijActionSync(["write", "13"], surface);
 }
@@ -1266,6 +1331,11 @@ export function sendEscape(surface: string): void {
     execFileSync("wezterm", ["cli", "send-text", "--pane-id", surface, "--no-paste", "\u001b"], {
       encoding: "utf8",
     });
+    return;
+  }
+
+  if (backend === "vscode") {
+    vscodeSync("send", { surface, text: "\u001b" });
     return;
   }
 
@@ -1341,6 +1411,10 @@ export function readScreen(surface: string, lines = 50): string {
     return tailLines(raw, lines);
   }
 
+  if (backend === "vscode") {
+    return tailLines(String(vscodeSync("read", { surface, lines }).text ?? ""), lines);
+  }
+
   // Zellij 0.44+: use --pane-id flag + stdout instead of env var + temp file.
   // The ZELLIJ_PANE_ID env var doesn't reliably target other panes for dump-screen,
   // and --path may silently fail to create the file. Stdout capture is robust.
@@ -1384,6 +1458,10 @@ export async function readScreenAsync(surface: string, lines = 50): Promise<stri
       { encoding: "utf8" },
     );
     return tailLines(stdout, lines);
+  }
+
+  if (backend === "vscode") {
+    return tailLines(String((await vscodeAsync("read", { surface, lines })).text ?? ""), lines);
   }
 
   // Zellij 0.44+: use --pane-id flag + stdout instead of env var + temp file.
@@ -1441,6 +1519,11 @@ export function closeSurface(surface: string): void {
       encoding: "utf8",
     });
     rebalanceWezTermRoot();
+    return;
+  }
+
+  if (backend === "vscode") {
+    vscodeSync("close", { surface });
     return;
   }
 

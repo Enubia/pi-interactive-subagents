@@ -156,7 +156,7 @@ async function verifyConfigRootLaunch(options: { parentConfig: "explicit" | "def
     const tool = options.request === "resume" ? "subagent_resume" : "subagent";
     const result = await parent.tools.get(tool).execute("call", params, undefined, undefined, ctx);
     assert.equal(result.details.status, "started");
-    const output = execFileSync("bash", ["-c", `pi() { node -e 'console.log(JSON.stringify({configDir:process.env.PI_CODING_AGENT_DIR,cwd:process.cwd(),session:process.env.PI_SUBAGENT_SESSION,args:process.argv.slice(1)}))' -- "$@"; }; ${launchCommand}`], { encoding: "utf8" });
+    const output = execFileSync("bash", ["-c", `pi() { node -e 'console.log(JSON.stringify({configDir:process.env.PI_CODING_AGENT_DIR,cwd:process.cwd(),session:process.env.PI_SUBAGENT_SESSION,parentSession:process.env.PI_SUBAGENT_PARENT_SESSION,args:process.argv.slice(1)}))' -- "$@"; }; ${launchCommand}`], { encoding: "utf8" });
     const launched = JSON.parse(output.split("\n")[0]);
     assert.equal(launched.cwd, targetCwd, "child starts in requested cwd");
     assert.equal(launched.configDir, options.parentConfig === "explicit" ? expectedConfigDir : undefined, "cwd does not override inherited config environment");
@@ -164,6 +164,7 @@ async function verifyConfigRootLaunch(options: { parentConfig: "explicit" | "def
     assert.equal(dirname(reportedSession), expectedSessionDir, "reported session stays under inherited config root");
     if (options.request === "resume") assert.equal(reportedSession, params.sessionPath, "resume retains existing session path");
     assert.equal(launched.session, reportedSession);
+    assert.equal(launched.parentSession, "parent", "child receives parent session id");
     assert.equal(launched.args[launched.args.indexOf("--session") + 1], reportedSession);
   } finally {
     parent.events.get("session_shutdown")?.({}, {});

@@ -1436,7 +1436,9 @@ export function sendLongCommand(
   writeFileSync(scriptPath, scriptParts.join("\n") + "\n", {
     mode: 0o755,
   });
-  sendCommand(surface, `bash ${shellEscape(scriptPath)}`);
+  const bash = isWindows ? '"$BASH"' : "bash";
+
+  sendCommand(surface, `${bash} ${shellEscape(scriptPath)}`);
   return scriptPath;
 }
 

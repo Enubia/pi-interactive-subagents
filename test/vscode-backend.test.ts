@@ -13,6 +13,8 @@ import {
   renameCurrentTab,
   sendCommand,
   sendEscape,
+  sendLongCommand,
+  shellEscape,
 } from "../pi-extension/subagents/cmux.ts";
 
 const SERVER = `
@@ -79,5 +81,13 @@ describe("vscode backend", () => {
       { op: "rename", body: { surface: "3", title: "Plan" } },
       { op: "close", body: { surface: "7" } },
     ]);
+  });
+
+  it("runs long commands with the pane's own bash on windows", () => {
+    const scriptPath = join(dir, "long.sh");
+    const bash = process.platform === "win32" ? '"$BASH"' : "bash";
+    sendLongCommand("7", "echo hi", { scriptPath });
+
+    assert.deepEqual(requests().at(-1), { op: "send", body: { surface: "7", text: `${bash} ${shellEscape(scriptPath)}\r` } });
   });
 });

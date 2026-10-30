@@ -63,8 +63,13 @@ function isWezTermRuntimeAvailable(): boolean {
   return !!process.env.WEZTERM_UNIX_SOCKET && hasCommand("wezterm");
 }
 
+const isWindows = process.platform === "win32";
+
 function isVscodeRuntimeAvailable(): boolean {
-  return !!process.env.PI_VSCODE_SOCKET && existsSync(process.env.PI_VSCODE_SOCKET) && hasCommand("curl");
+  const socket = process.env.PI_VSCODE_SOCKET;
+  if (!socket) return false;
+  if (isWindows) return socket.startsWith("\\\\.\\pipe\\");
+  return existsSync(socket) && hasCommand("curl");
 }
 
 export function isVscodeAvailable(): boolean {
@@ -86,15 +91,70 @@ function vscodeCurlArgs(op: string, body: Record<string, unknown>): string[] {
   ];
 }
 
+const VSCODE_PIPE_REQUEST_SCRIPT = `
+const http = require("node:http");
+const [socketPath, op] = process.argv.slice(1);
+let body = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => (body += chunk));
+process.stdin.on("end", () => {
+  const request = http.request(
+    { socketPath, path: "/" + op, method: "POST", headers: { "content-type": "application/json" }, timeout: 10000 },
+    (response) => {
+      let data = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => (data += chunk));
+      response.on("end", () => {
+        if (response.statusCode >= 400) {
+          process.stderr.write("pi-vscode " + op + " failed: " + response.statusCode + " " + data);
+          process.exitCode = 1;
+          return;
+        }
+        process.stdout.write(data);
+      });
+    },
+  );
+  request.on("timeout", () => request.destroy(new Error("pi-vscode request timed out")));
+  request.on("error", (error) => {
+    process.stderr.write(error.message);
+    process.exitCode = 1;
+  });
+  request.end(body);
+});
+`;
+
+function vscodePipeArgs(op: string): string[] {
+  return ["-e", VSCODE_PIPE_REQUEST_SCRIPT, process.env.PI_VSCODE_SOCKET ?? "", op];
+}
+
 function parseVscodeResponse(stdout: string): any {
   return stdout.trim() ? JSON.parse(stdout) : {};
 }
 
 function vscodeSync(op: string, body: Record<string, unknown>): any {
+  if (isWindows) {
+    return parseVscodeResponse(
+      execFileSync(process.execPath, vscodePipeArgs(op), { encoding: "utf8", input: JSON.stringify(body), windowsHide: true }),
+    );
+  }
+
   return parseVscodeResponse(execFileSync("curl", vscodeCurlArgs(op, body), { encoding: "utf8" }));
 }
 
 async function vscodeAsync(op: string, body: Record<string, unknown>): Promise<any> {
+  if (isWindows) {
+    const stdout = await new Promise<string>((resolve, reject) => {
+      const child = execFile(process.execPath, vscodePipeArgs(op), { encoding: "utf8", windowsHide: true }, (error, out) => {
+        if (error) reject(error);
+        else resolve(out);
+      });
+
+      child.stdin?.end(JSON.stringify(body));
+    });
+
+    return parseVscodeResponse(stdout);
+  }
+
   const { stdout } = await execFileAsync("curl", vscodeCurlArgs(op, body), { encoding: "utf8" });
   return parseVscodeResponse(stdout);
 }

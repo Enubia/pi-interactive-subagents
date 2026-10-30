@@ -18,7 +18,7 @@ import {
 const SERVER = `
 const http = require("node:http");
 const fs = require("node:fs");
-const [socket, log] = process.argv.slice(1);
+const [socket, log, ready] = process.argv.slice(1);
 http.createServer((req, res) => {
   let body = "";
   req.on("data", (chunk) => (body += chunk));
@@ -29,19 +29,20 @@ http.createServer((req, res) => {
     if (req.url === "/read") return res.end(JSON.stringify({ text: "a\\nb\\n__SUBAGENT_DONE_0__" }));
     res.end("{}");
   });
-}).listen(socket);
+}).listen(socket, () => fs.writeFileSync(ready, ""));
 `;
 
 describe("vscode backend", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-vscode-backend-"));
-  const socket = join(dir, "s.sock");
+  const socket = process.platform === "win32" ? `\\\\.\\pipe\\pi-vscode-backend-${process.pid}` : join(dir, "s.sock");
   const log = join(dir, "log.jsonl");
+  const ready = join(dir, "ready");
   const saved = { ...process.env };
   let server: ChildProcess;
 
   before(async () => {
-    server = spawn(process.execPath, ["-e", SERVER, socket, log], { stdio: "ignore" });
-    for (let i = 0; i < 100 && !existsSync(socket); i++) await new Promise((r) => setTimeout(r, 20));
+    server = spawn(process.execPath, ["-e", SERVER, socket, log, ready], { stdio: "ignore" });
+    for (let i = 0; i < 100 && !existsSync(ready); i++) await new Promise((r) => setTimeout(r, 20));
     process.env.PI_VSCODE_SOCKET = socket;
     process.env.PI_SUBAGENT_MUX = "vscode";
     process.env.PI_XTERM_SESSION = "3";
